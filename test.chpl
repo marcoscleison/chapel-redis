@@ -17,13 +17,25 @@ module Main{
 use Redis;
     proc main(){
 
-      var con =  redisConnect("127.0.0.1".localize().c_str(),  6379);
-        var reply = redisCommand(con,"PING".localize().c_str()):c_ptr(redisReply);
-        var r = reply.deref();
+      var redis = new Redis();
+      redis.Set("name","Marcos");
+      var res = redis.Get("name");
+      writeln(res.asString());
 
-        var s= new string(r.str);
+     redis.Hmset("user:1", "username", "tutorialspoint");
+     res = redis.Hgetall("user:1");
 
-        writeln(s);
+     for r in res.asResults(){
+        writeln("Resultado = ",r.asString());
+     }
 
-    }
+     res = redis.ConfigGet("*");
+
+     coforall r in res.asResults(){
+        writeln("Resultado = ",r.asString());
+        delete r;
+     }
+
+    
+}
 }

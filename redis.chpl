@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE_2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,8 +17,10 @@ module Redis{
 
     use SysBasic;
 
-    require "hiredis/hiredis.h";
+    require "hiredis/hiredis.h","-lhiredis";
+		require "redishelper.h";
     require "time.h";
+
 
 extern record redisReadTask{
 }
@@ -35,13 +37,14 @@ extern proc  redisReaderFeed(r: c_ptr(redisReader ), buf: c_string, len: c_int )
 extern proc  redisReaderGetReply(r: c_ptr(redisReader ), reply: c_ptr(void ) ):c_int;
 
 extern record redisReply{
-    var _type: c_int;
 	var integer: c_longlong;
 	var len: c_int;
 	var str: c_string;
 	var elements: c_int;
-	var element: c_ptr(redisReply );
+	var element: c_ptr(c_ptr(redisReply));
 }
+
+
 
 extern record redisContext{
 }
@@ -78,7 +81,7 @@ extern proc  redisFree(c: c_ptr(redisContext ) ):c_void_ptr;
 extern proc  redisFreeKeepFd(c: c_ptr(redisContext ) ):c_int;
 extern proc  redisBufferRead(c: c_ptr(redisContext ) ):c_int;
 extern proc  redisBufferWrite(c: c_ptr(redisContext ), done: c_ptr(c_int) ):c_int;
-extern proc  redisGetReply(c: c_ptr(redisContext ), reply: c_ptr(void ) ):c_int;
+extern proc  redisGetReply(c: c_ptr(redisContext ), reply: c_ptr(c_void_ptr)):c_int;
 extern proc  redisGetReplyFromReader(c: c_ptr(redisContext ), reply: c_ptr(void ) ):c_int;
 extern proc  redisAppendFormattedCommand(c: c_ptr(redisContext ), cmd: c_string, len: c_int ):c_int;
 extern proc  redisvAppendCommand(c: c_ptr(redisContext ), format: c_string, ap...?k ):c_int;
@@ -88,820 +91,1016 @@ extern proc  redisvCommand(c: c_ptr(redisContext ), format: c_string, ap...?k ):
 extern proc  redisCommand(c: c_ptr(redisContext ), format: c_string ):c_void_ptr;
 extern proc  redisCommandArgv(c: c_ptr(redisContext ), argc: c_int, argv: c_string, argvlen: c_ptr(c_int ) ):c_void_ptr;
 
+extern const REDIS_ERR:int; 
+extern const REDIS_OK:int;
+extern const REDIS_ERR_IO:int;  
+extern const REDIS_ERR_EOF:int; 
+extern const REDIS_ERR_PROTOCOL:int;  
+extern const REDIS_ERR_OOM:int;  
+extern const REDIS_ERR_OTHER:int;  
+extern const REDIS_REPLY_STRING:int; 
+extern const REDIS_REPLY_ARRAY:int; 
+extern const REDIS_REPLY_INTEGER:int; 
+extern const REDIS_REPLY_NIL:int; 
+extern const REDIS_REPLY_STATUS:int; 
+extern const REDIS_REPLY_ERROR:int; 
+extern const REDIS_READER_MAX_BUF:int; 
+
+extern proc getRedisReplyTypeFromPointer(reply:c_ptr(redisReply)):c_int;
+extern proc getRedisReplyType(reply:redisReply):c_int;
+extern proc getRedisReply(con:c_ptr(redisContext), reply:c_ptr(redisReply)): c_ptr(redisReply);
+ proc getProcessArguments(args...?n){
+  var str="";
+  for param i in 1..n {
+    str += " "+args(i);
+  }
+	return str;
+ }
+
+class RedisResult{
+	var reply:c_ptr(redisReply) ;
+	var _type:int;
+
+	proc RedisResult(reply:c_ptr(redisReply) ){
+		this.reply=reply:c_ptr(redisReply);
+		this._type = getRedisReplyTypeFromPointer(reply):int;
+	}
+	
+	proc asString():string{
+		var rep:redisReply = this.reply.deref():redisReply;
+			if(this._type==REDIS_REPLY_STRING){
+				return new string(rep.str);
+			}else{
+				return "";
+			}
+	}
+
+proc getChannelOperation(){
+		if(this._type==REDIS_REPLY_ARRAY){
+				
+			var rep:redisReply = this.reply.deref():redisReply;
+			writeln("elements ",rep.elements);
+			if(rep.elements==3){
+					var rel = rep.element[0].deref():redisReply;
+				 	return new string(rel.str);
+				
+			}else{
+				return "";
+			}
+		}
+		else{			
+			return "";
+		}
+}
+
+proc getChannelName(){
+	if(this._type==REDIS_REPLY_ARRAY){
+				
+			var rep:redisReply = this.reply.deref():redisReply;
+			
+			if(rep.elements==3){
+					var rel = rep.element[1].deref():redisReply;
+				 	return new string(rel.str);
+				
+			}else{
+				return "";
+			}
+		}
+		else{			
+			return "";
+		}
+}
+proc getChannelMessage(){
+	if(this._type==REDIS_REPLY_ARRAY){
+				
+			var rep:redisReply = this.reply.deref():redisReply;
+			
+			if(rep.elements==3){
+					var rel = rep.element[2].deref():redisReply;
+				 	return new string(rel.str);
+				
+			}else{
+				return "";
+			}
+		}
+		else{			
+			return "";
+		}
+}
+	proc isChannelSubscribe():bool{
+		
+		return this.getChannelOperation()=="subscribe";
+	}
+
+proc isChannelMessage():bool{
+		
+		return this.getChannelOperation()=="message";
+	}
+
+
+  proc asInt():int{
+		var rep:redisReply = this.reply.deref():redisReply;
+		if(this._type==REDIS_REPLY_INTEGER){
+			return rep.integer:int;
+		}else{
+			return 0;
+		}
+	}
+
+proc asStatus(){
+	 var rep:redisReply = this.reply.deref():redisReply;
+		if(this._type==REDIS_REPLY_STATUS){
+					return new string(rep.str:c_string);
+				}
+				return "";
+}	
+	proc isNil():bool{
+				if(this._type==REDIS_REPLY_NIL){
+					return true;
+				}
+				return false;
+	}
+
+	proc Length():int{
+		 var rep:redisReply = this.reply.deref():redisReply;
+		 return rep.elements:int;
+	}
+
+	iter asResults(){
+		if(this._type==REDIS_REPLY_ARRAY){
+			var rep:redisReply = this.reply.deref():redisReply;			
+			var i:int=0;
+			while(i<rep.elements){
+				var rel = rep.element[i];
+				 yield new RedisResult(rel);	
+				i+=1;
+			}
+		}
+		else{			
+			yield this;
+		}
+
+	}
+
+	proc ~RedisResult(){
+		freeReplyObject(this.reply);
+	}
+
+}
+
+
 class Redis{
 	var con:c_ptr(redisContext );
-
+var lock$: sync bool;
 	proc Redis(host:string="127.0.0.1",port:int=6379){
-		      this.con =  redisConnect(host.localize().c_str(),  port);
-        var reply = redisCommand(con,"PING".localize().c_str()):c_ptr(redisReply);
-        var r = reply.deref();
-        var s= new string(r.str);
-        writeln(s);
+		      this.con =  redisConnect(host.localize().c_str(),  port:c_int);
+					this.lock$.writeXF( true ); 
+
 	}
 
-	proc Command(format: string){
-		return redisCommand(con,format.localize().c_str()):c_ptr(redisReply);
+	proc Command(format: string, args...?n){
+   this.lock$;
+		var commands:string = format+" "+getProcessArguments((...args));
+		var result = redisCommand(this.con,commands.localize().c_str()):c_ptr(redisReply);
+		this.lock$.writeXF( true ); 
+		return new RedisResult(result);
 	}
-	proc Pfadd(args){
-  	 return this.Command("PFADD");
-  } 
 
-proc Pfcount(args){
-  	 return this.Command("PFCOUNT");
+proc Pfadd(args...?n){
+  	 return this.Command("PFADD",(...args));
   } 
 
-proc Pfmerge(args){
-  	 return this.Command("PFMERGE");
+proc Pfcount(args...?n){
+  	 return this.Command("PFCOUNT",(...args));
   } 
 
-proc Hdel(args){
-  	 return this.Command("HDEL");
+proc Pfmerge(args...?n){
+  	 return this.Command("PFMERGE",(...args));
   } 
 
-proc Hexists(args){
-  	 return this.Command("HEXISTS");
+proc Hdel(args...?n){
+  	 return this.Command("HDEL",(...args));
   } 
 
-proc Hget(args){
-  	 return this.Command("HGET");
+proc Hexists(args...?n){
+  	 return this.Command("HEXISTS",(...args));
   } 
 
-proc Hgetall(args){
-  	 return this.Command("HGETALL");
+proc Hget(args...?n){
+  	 return this.Command("HGET",(...args));
   } 
 
-proc Hincrby(args){
-  	 return this.Command("HINCRBY");
+proc Hgetall(args...?n){
+  	 return this.Command("HGETALL",(...args));
   } 
 
-proc Hincrbyfloat(args){
-  	 return this.Command("HINCRBYFLOAT");
+proc Hincrby(args...?n){
+  	 return this.Command("HINCRBY",(...args));
   } 
 
-proc Hkeys(args){
-  	 return this.Command("HKEYS");
+proc Hincrbyfloat(args...?n){
+  	 return this.Command("HINCRBYFLOAT",(...args));
   } 
 
-proc Hlen(args){
-  	 return this.Command("HLEN");
+proc Hkeys(args...?n){
+  	 return this.Command("HKEYS",(...args));
   } 
 
-proc Hmget(args){
-  	 return this.Command("HMGET");
+proc Hlen(args...?n){
+  	 return this.Command("HLEN",(...args));
   } 
 
-proc Hmset(args){
-  	 return this.Command("HMSET");
+proc Hmget(args...?n){
+  	 return this.Command("HMGET",(...args));
   } 
 
-proc Hscan(args){
-  	 return this.Command("HSCAN");
+proc Hmset(args...?n){
+  	 return this.Command("HMSET",(...args));
   } 
 
-proc Hset(args){
-  	 return this.Command("HSET");
+proc Hscan(args...?n){
+  	 return this.Command("HSCAN",(...args));
   } 
 
-proc Hsetnx(args){
-  	 return this.Command("HSETNX");
+proc Hset(args...?n){
+  	 return this.Command("HSET",(...args));
   } 
 
-proc Hstrlen(args){
-  	 return this.Command("HSTRLEN");
+proc Hsetnx(args...?n){
+  	 return this.Command("HSETNX",(...args));
   } 
 
-proc Hvals(args){
-  	 return this.Command("HVALS");
+proc Hstrlen(args...?n){
+  	 return this.Command("HSTRLEN",(...args));
   } 
 
-proc Geoadd(args){
-  	 return this.Command("GEOADD");
+proc Hvals(args...?n){
+  	 return this.Command("HVALS",(...args));
   } 
 
-proc Geodist(args){
-  	 return this.Command("GEODIST");
+proc Geoadd(args...?n){
+  	 return this.Command("GEOADD",(...args));
   } 
 
-proc Geohash(args){
-  	 return this.Command("GEOHASH");
+proc Geodist(args...?n){
+  	 return this.Command("GEODIST",(...args));
   } 
 
-proc Geopos(args){
-  	 return this.Command("GEOPOS");
+proc Geohash(args...?n){
+  	 return this.Command("GEOHASH",(...args));
   } 
 
-proc Georadius(args){
-  	 return this.Command("GEORADIUS");
+proc Geopos(args...?n){
+  	 return this.Command("GEOPOS",(...args));
   } 
 
-proc Georadiusbymember(args){
-  	 return this.Command("GEORADIUSBYMEMBER");
+proc Georadius(args...?n){
+  	 return this.Command("GEORADIUS",(...args));
   } 
 
-proc Auth(args){
-  	 return this.Command("AUTH");
+proc Georadiusbymember(args...?n){
+  	 return this.Command("GEORADIUSBYMEMBER",(...args));
   } 
 
-proc Echo(args){
-  	 return this.Command("ECHO");
+proc Auth(args...?n){
+  	 return this.Command("AUTH",(...args));
   } 
 
-proc Ping(args){
-  	 return this.Command("PING");
+proc Echo(args...?n){
+  	 return this.Command("ECHO",(...args));
   } 
 
-proc Quit(args){
-  	 return this.Command("QUIT");
+proc Ping(args...?n){
+  	 return this.Command("PING",(...args));
   } 
 
-proc Select(args){
-  	 return this.Command("SELECT");
+proc Quit(args...?n){
+  	 return this.Command("QUIT",(...args));
   } 
 
-proc Swapdb(args){
-  	 return this.Command("SWAPDB");
+proc Select(args...?n){
+  	 return this.Command("SELECT",(...args));
   } 
 
-proc ClusterAddslots(args){
-  	 return this.Command("CLUSTER ADDSLOTS");
+proc Swapdb(args...?n){
+  	 return this.Command("SWAPDB",(...args));
   } 
 
-proc ClusterCountFailureReports(args){
-  	 return this.Command("CLUSTER COUNT-FAILURE-REPORTS");
+proc ClusterAddslots(args...?n){
+  	 return this.Command("CLUSTER ADDSLOTS",(...args));
   } 
 
-proc ClusterCountkeysinslot(args){
-  	 return this.Command("CLUSTER COUNTKEYSINSLOT");
+proc ClusterCount_Failure_Reports(args...?n){
+  	 return this.Command("CLUSTER COUNT-FAILURE-REPORTS",(...args));
   } 
 
-proc ClusterDelslots(args){
-  	 return this.Command("CLUSTER DELSLOTS");
+proc ClusterCountkeysinslot(args...?n){
+  	 return this.Command("CLUSTER COUNTKEYSINSLOT",(...args));
   } 
 
-proc ClusterFailover(args){
-  	 return this.Command("CLUSTER FAILOVER");
+proc ClusterDelslots(args...?n){
+  	 return this.Command("CLUSTER DELSLOTS",(...args));
   } 
 
-proc ClusterForget(args){
-  	 return this.Command("CLUSTER FORGET");
+proc ClusterFailover(args...?n){
+  	 return this.Command("CLUSTER FAILOVER",(...args));
   } 
 
-proc ClusterGetkeysinslot(args){
-  	 return this.Command("CLUSTER GETKEYSINSLOT");
+proc ClusterForget(args...?n){
+  	 return this.Command("CLUSTER FORGET",(...args));
   } 
 
-proc ClusterInfo(args){
-  	 return this.Command("CLUSTER INFO");
+proc ClusterGetkeysinslot(args...?n){
+  	 return this.Command("CLUSTER GETKEYSINSLOT",(...args));
   } 
 
-proc ClusterKeyslot(args){
-  	 return this.Command("CLUSTER KEYSLOT");
+proc ClusterInfo(args...?n){
+  	 return this.Command("CLUSTER INFO",(...args));
   } 
 
-proc ClusterMeet(args){
-  	 return this.Command("CLUSTER MEET");
+proc ClusterKeyslot(args...?n){
+  	 return this.Command("CLUSTER KEYSLOT",(...args));
   } 
 
-proc ClusterNodes(args){
-  	 return this.Command("CLUSTER NODES");
+proc ClusterMeet(args...?n){
+  	 return this.Command("CLUSTER MEET",(...args));
   } 
 
-proc ClusterReplicate(args){
-  	 return this.Command("CLUSTER REPLICATE");
+proc ClusterNodes(args...?n){
+  	 return this.Command("CLUSTER NODES",(...args));
   } 
 
-proc ClusterReset(args){
-  	 return this.Command("CLUSTER RESET");
+proc ClusterReplicate(args...?n){
+  	 return this.Command("CLUSTER REPLICATE",(...args));
   } 
 
-proc ClusterSaveconfig(args){
-  	 return this.Command("CLUSTER SAVECONFIG");
+proc ClusterReset(args...?n){
+  	 return this.Command("CLUSTER RESET",(...args));
   } 
 
-proc ClusterSet-Config-Epoch(args){
-  	 return this.Command("CLUSTER SET-CONFIG-EPOCH");
+proc ClusterSaveconfig(args...?n){
+  	 return this.Command("CLUSTER SAVECONFIG",(...args));
   } 
 
-proc ClusterSetslot(args){
-  	 return this.Command("CLUSTER SETSLOT");
+proc ClusterSet_Config_Epoch(args...?n){
+  	 return this.Command("CLUSTER SET_CONFIG_EPOCH",(...args));
   } 
 
-proc ClusterSlaves(args){
-  	 return this.Command("CLUSTER SLAVES");
+proc ClusterSetslot(args...?n){
+  	 return this.Command("CLUSTER SETSLOT",(...args));
   } 
 
-proc ClusterSlots(args){
-  	 return this.Command("CLUSTER SLOTS");
+proc ClusterSlaves(args...?n){
+  	 return this.Command("CLUSTER SLAVES",(...args));
   } 
 
-proc Readonly(args){
-  	 return this.Command("READONLY");
+proc ClusterSlots(args...?n){
+  	 return this.Command("CLUSTER SLOTS",(...args));
   } 
 
-proc Readwrite(args){
-  	 return this.Command("READWRITE");
+proc Readonly(args...?n){
+  	 return this.Command("READONLY",(...args));
   } 
 
-proc Del(args){
-  	 return this.Command("DEL");
+proc Readwrite(args...?n){
+  	 return this.Command("READWRITE",(...args));
   } 
 
-proc Dump(args){
-  	 return this.Command("DUMP");
+proc Del(args...?n){
+  	 return this.Command("DEL",(...args));
   } 
 
-proc Exists(args){
-  	 return this.Command("EXISTS");
+proc Dump(args...?n){
+  	 return this.Command("DUMP",(...args));
   } 
 
-proc Expire(args){
-  	 return this.Command("EXPIRE");
+proc Exists(args...?n){
+  	 return this.Command("EXISTS",(...args));
   } 
 
-proc Expireat(args){
-  	 return this.Command("EXPIREAT");
+proc Expire(args...?n){
+  	 return this.Command("EXPIRE",(...args));
   } 
 
-proc Keys(args){
-  	 return this.Command("KEYS");
+proc Expireat(args...?n){
+  	 return this.Command("EXPIREAT",(...args));
   } 
 
-proc Migrate(args){
-  	 return this.Command("MIGRATE");
+proc Keys(args...?n){
+  	 return this.Command("KEYS",(...args));
   } 
 
-proc Move(args){
-  	 return this.Command("MOVE");
+proc Migrate(args...?n){
+  	 return this.Command("MIGRATE",(...args));
   } 
 
-proc Object(args){
-  	 return this.Command("OBJECT");
+proc Move(args...?n){
+  	 return this.Command("MOVE",(...args));
   } 
 
-proc Persist(args){
-  	 return this.Command("PERSIST");
+proc Object(args...?n){
+  	 return this.Command("OBJECT",(...args));
   } 
 
-proc Pexpire(args){
-  	 return this.Command("PEXPIRE");
+proc Persist(args...?n){
+  	 return this.Command("PERSIST",(...args));
   } 
 
-proc Pexpireat(args){
-  	 return this.Command("PEXPIREAT");
+proc Pexpire(args...?n){
+  	 return this.Command("PEXPIRE",(...args));
   } 
 
-proc Pttl(args){
-  	 return this.Command("PTTL");
+proc Pexpireat(args...?n){
+  	 return this.Command("PEXPIREAT",(...args));
   } 
 
-proc Randomkey(args){
-  	 return this.Command("RANDOMKEY");
+proc Pttl(args...?n){
+  	 return this.Command("PTTL",(...args));
   } 
 
-proc Rename(args){
-  	 return this.Command("RENAME");
+proc Randomkey(args...?n){
+  	 return this.Command("RANDOMKEY",(...args));
   } 
 
-proc Renamenx(args){
-  	 return this.Command("RENAMENX");
+proc Rename(args...?n){
+  	 return this.Command("RENAME",(...args));
   } 
 
-proc Restore(args){
-  	 return this.Command("RESTORE");
+proc Renamenx(args...?n){
+  	 return this.Command("RENAMENX",(...args));
   } 
 
-proc Scan(args){
-  	 return this.Command("SCAN");
+proc Restore(args...?n){
+  	 return this.Command("RESTORE",(...args));
   } 
 
-proc Sort(args){
-  	 return this.Command("SORT");
+proc Scan(args...?n){
+  	 return this.Command("SCAN",(...args));
   } 
 
-proc Touch(args){
-  	 return this.Command("TOUCH");
+proc Sort(args...?n){
+  	 return this.Command("SORT",(...args));
   } 
 
-proc Ttl(args){
-  	 return this.Command("TTL");
+proc Touch(args...?n){
+  	 return this.Command("TOUCH",(...args));
   } 
 
-proc Type(args){
-  	 return this.Command("TYPE");
+proc Ttl(args...?n){
+  	 return this.Command("TTL",(...args));
   } 
 
-proc Unlink(args){
-  	 return this.Command("UNLINK");
+proc Type(args...?n){
+  	 return this.Command("TYPE",(...args));
   } 
 
-proc Wait(args){
-  	 return this.Command("WAIT");
+proc Unlink(args...?n){
+  	 return this.Command("UNLINK",(...args));
   } 
 
-proc Blpop(args){
-  	 return this.Command("BLPOP");
+proc Wait(args...?n){
+  	 return this.Command("WAIT",(...args));
   } 
 
-proc Brpop(args){
-  	 return this.Command("BRPOP");
+proc Blpop(args...?n){
+  	 return this.Command("BLPOP",(...args));
   } 
 
-proc Brpoplpush(args){
-  	 return this.Command("BRPOPLPUSH");
+proc Brpop(args...?n){
+  	 return this.Command("BRPOP",(...args));
   } 
 
-proc Lindex(args){
-  	 return this.Command("LINDEX");
+proc Brpoplpush(args...?n){
+  	 return this.Command("BRPOPLPUSH",(...args));
   } 
 
-proc Linsert(args){
-  	 return this.Command("LINSERT");
+proc Lindex(args...?n){
+  	 return this.Command("LINDEX",(...args));
   } 
 
-proc Llen(args){
-  	 return this.Command("LLEN");
+proc Linsert(args...?n){
+  	 return this.Command("LINSERT",(...args));
   } 
 
-proc Lpop(args){
-  	 return this.Command("LPOP");
+proc Llen(args...?n){
+  	 return this.Command("LLEN",(...args));
   } 
 
-proc Lpush(args){
-  	 return this.Command("LPUSH");
+proc Lpop(args...?n){
+  	 return this.Command("LPOP",(...args));
   } 
 
-proc Lpushx(args){
-  	 return this.Command("LPUSHX");
+proc Lpush(args...?n){
+  	 return this.Command("LPUSH",(...args));
   } 
 
-proc Lrange(args){
-  	 return this.Command("LRANGE");
+proc Lpushx(args...?n){
+  	 return this.Command("LPUSHX",(...args));
   } 
 
-proc Lrem(args){
-  	 return this.Command("LREM");
+proc Lrange(args...?n){
+  	 return this.Command("LRANGE",(...args));
   } 
 
-proc Lset(args){
-  	 return this.Command("LSET");
+proc Lrem(args...?n){
+  	 return this.Command("LREM",(...args));
   } 
 
-proc Ltrim(args){
-  	 return this.Command("LTRIM");
+proc Lset(args...?n){
+  	 return this.Command("LSET",(...args));
   } 
 
-proc Rpop(args){
-  	 return this.Command("RPOP");
+proc Ltrim(args...?n){
+  	 return this.Command("LTRIM",(...args));
   } 
 
-proc Rpoplpush(args){
-  	 return this.Command("RPOPLPUSH");
+proc Rpop(args...?n){
+  	 return this.Command("RPOP",(...args));
   } 
 
-proc Rpush(args){
-  	 return this.Command("RPUSH");
+proc Rpoplpush(args...?n){
+  	 return this.Command("RPOPLPUSH",(...args));
   } 
 
-proc Rpushx(args){
-  	 return this.Command("RPUSHX");
+proc Rpush(args...?n){
+  	 return this.Command("RPUSH",(...args));
   } 
 
-proc Psubscribe(args){
-  	 return this.Command("PSUBSCRIBE");
+proc Rpushx(args...?n){
+  	 return this.Command("RPUSHX",(...args));
   } 
+
+proc Psubscribe(args...?n,cb:func(RedisResult,void)){
+  	 var result=this.Command("PSUBSCRIBE",(...args));
+		 delete result;
+
+var reply:c_ptr(redisReply); 
+		
+		 reply = getRedisReply(this.con,reply);
+
+		 var status = getRedisReplyTypeFromPointer(reply):int;
+		 //Change this
+		 while(1) {
+				var res = new RedisResult(reply);
+			
+			
+				
+				cb(res);
 
-proc Publish(args){
-  	 return this.Command("PUBLISH");
+				reply = getRedisReply(this.con,reply);
+				status = getRedisReplyTypeFromPointer(reply):int;
+				
+				delete res;
+		}
+
   } 
 
-proc Pubsub(args){
-  	 return this.Command("PUBSUB");
+proc Publish(args...?n){
+  	 return this.Command("PUBLISH",(...args));
   } 
 
-proc Punsubscribe(args){
-  	 return this.Command("PUNSUBSCRIBE");
+proc Pubsub(args...?n){
+  	 return this.Command("PUBSUB",(...args));
   } 
 
-proc Subscribe(args){
-  	 return this.Command("SUBSCRIBE");
+proc Punsubscribe(args...?n){
+  	 return this.Command("PUNSUBSCRIBE",(...args));
   } 
+
+proc Subscribe(args...?n,cb:func(RedisResult,void)){
+  	 var result = this.Command("SUBSCRIBE",(...args));
+		 delete result;
 
-proc Unsubscribe(args){
-  	 return this.Command("UNSUBSCRIBE");
+     var reply:c_ptr(redisReply); 
+
+		 reply = getRedisReply(this.con,reply);
+		 var status = getRedisReplyTypeFromPointer(reply):int;
+		 //Change this
+		 while(1) {
+				var res = new RedisResult(reply);	
+				cb(res);
+				reply = getRedisReply(this.con,reply);
+				status = getRedisReplyTypeFromPointer(reply):int;
+				delete res;
+		}
+
   } 
 
-proc Eval(args){
-  	 return this.Command("EVAL");
+proc Unsubscribe(args...?n){
+  	 return this.Command("UNSUBSCRIBE",(...args));
   } 
 
-proc Evalsha(args){
-  	 return this.Command("EVALSHA");
+proc Eval(args...?n){
+  	 return this.Command("EVAL",(...args));
   } 
 
-proc ScriptDebug(args){
-  	 return this.Command("SCRIPT DEBUG");
+proc Evalsha(args...?n){
+  	 return this.Command("EVALSHA",(...args));
   } 
 
-proc ScriptExists(args){
-  	 return this.Command("SCRIPT EXISTS");
+proc ScriptDebug(args...?n){
+  	 return this.Command("SCRIPT DEBUG",(...args));
   } 
 
-proc ScriptFlush(args){
-  	 return this.Command("SCRIPT FLUSH");
+proc ScriptExists(args...?n){
+  	 return this.Command("SCRIPT EXISTS",(...args));
   } 
 
-proc ScriptKill(args){
-  	 return this.Command("SCRIPT KILL");
+proc ScriptFlush(args...?n){
+  	 return this.Command("SCRIPT FLUSH",(...args));
   } 
 
-proc ScriptLoad(args){
-  	 return this.Command("SCRIPT LOAD");
+proc ScriptKill(args...?n){
+  	 return this.Command("SCRIPT KILL",(...args));
   } 
 
-proc Bgrewriteaof(args){
-  	 return this.Command("BGREWRITEAOF");
+proc ScriptLoad(args...?n){
+  	 return this.Command("SCRIPT LOAD",(...args));
   } 
 
-proc Bgsave(args){
-  	 return this.Command("BGSAVE");
+proc Bgrewriteaof(args...?n){
+  	 return this.Command("BGREWRITEAOF",(...args));
   } 
 
-proc ClientGetname(args){
-  	 return this.Command("CLIENT GETNAME");
+proc Bgsave(args...?n){
+  	 return this.Command("BGSAVE",(...args));
   } 
 
-proc ClientKill(args){
-  	 return this.Command("CLIENT KILL");
+proc ClientGetname(args...?n){
+  	 return this.Command("CLIENT GETNAME",(...args));
   } 
 
-proc ClientList(args){
-  	 return this.Command("CLIENT LIST");
+proc ClientKill(args...?n){
+  	 return this.Command("CLIENT KILL",(...args));
   } 
 
-proc ClientPause(args){
-  	 return this.Command("CLIENT PAUSE");
+proc ClientList(args...?n){
+  	 return this.Command("CLIENT LIST",(...args));
   } 
 
-proc ClientReply(args){
-  	 return this.Command("CLIENT REPLY");
+proc ClientPause(args...?n){
+  	 return this.Command("CLIENT PAUSE",(...args));
   } 
 
-proc ClientSetname(args){
-  	 return this.Command("CLIENT SETNAME");
+proc ClientReply(args...?n){
+  	 return this.Command("CLIENT REPLY",(...args));
   } 
 
-proc Command(args){
-  	 return this.Command("COMMAND");
+proc ClientSetname(args...?n){
+  	 return this.Command("CLIENT SETNAME",(...args));
   } 
 
-proc CommandCount(args){
-  	 return this.Command("COMMAND COUNT");
+proc Command(args...?n){
+  	 return this.Command("COMMAND",(...args));
   } 
 
-proc CommandGetkeys(args){
-  	 return this.Command("COMMAND GETKEYS");
+proc CommandCount(args...?n){
+  	 return this.Command("COMMAND COUNT",(...args));
   } 
 
-proc CommandInfo(args){
-  	 return this.Command("COMMAND INFO");
+proc CommandGetkeys(args...?n){
+  	 return this.Command("COMMAND GETKEYS",(...args));
   } 
 
-proc ConfigGet(args){
-  	 return this.Command("CONFIG GET");
+proc CommandInfo(args...?n){
+  	 return this.Command("COMMAND INFO",(...args));
   } 
 
-proc ConfigResetstat(args){
-  	 return this.Command("CONFIG RESETSTAT");
+proc ConfigGet(args...?n){
+  	 return this.Command("CONFIG GET",(...args));
   } 
 
-proc ConfigRewrite(args){
-  	 return this.Command("CONFIG REWRITE");
+proc ConfigResetstat(args...?n){
+  	 return this.Command("CONFIG RESETSTAT",(...args));
   } 
 
-proc ConfigSet(args){
-  	 return this.Command("CONFIG SET");
+proc ConfigRewrite(args...?n){
+  	 return this.Command("CONFIG REWRITE",(...args));
   } 
 
-proc Dbsize(args){
-  	 return this.Command("DBSIZE");
+proc ConfigSet(args...?n){
+  	 return this.Command("CONFIG SET",(...args));
   } 
 
-proc DebugObject(args){
-  	 return this.Command("DEBUG OBJECT");
+proc Dbsize(args...?n){
+  	 return this.Command("DBSIZE",(...args));
   } 
 
-proc DebugSegfault(args){
-  	 return this.Command("DEBUG SEGFAULT");
+proc DebugObject(args...?n){
+  	 return this.Command("DEBUG OBJECT",(...args));
   } 
 
-proc Flushall(args){
-  	 return this.Command("FLUSHALL");
+proc DebugSegfault(args...?n){
+  	 return this.Command("DEBUG SEGFAULT",(...args));
   } 
 
-proc Flushdb(args){
-  	 return this.Command("FLUSHDB");
+proc Flushall(args...?n){
+  	 return this.Command("FLUSHALL",(...args));
   } 
 
-proc Info(args){
-  	 return this.Command("INFO");
+proc Flushdb(args...?n){
+  	 return this.Command("FLUSHDB",(...args));
   } 
 
-proc Lastsave(args){
-  	 return this.Command("LASTSAVE");
+proc Info(args...?n){
+  	 return this.Command("INFO",(...args));
   } 
 
-proc Monitor(args){
-  	 return this.Command("MONITOR");
+proc Lastsave(args...?n){
+  	 return this.Command("LASTSAVE",(...args));
   } 
 
-proc Role(args){
-  	 return this.Command("ROLE");
+proc Monitor(args...?n){
+  	 return this.Command("MONITOR",(...args));
   } 
 
-proc Save(args){
-  	 return this.Command("SAVE");
+proc Role(args...?n){
+  	 return this.Command("ROLE",(...args));
   } 
 
-proc Shutdown(args){
-  	 return this.Command("SHUTDOWN");
+proc Save(args...?n){
+  	 return this.Command("SAVE",(...args));
   } 
 
-proc Slaveof(args){
-  	 return this.Command("SLAVEOF");
+proc Shutdown(args...?n){
+  	 return this.Command("SHUTDOWN",(...args));
   } 
 
-proc Slowlog(args){
-  	 return this.Command("SLOWLOG");
+proc Slaveof(args...?n){
+  	 return this.Command("SLAVEOF",(...args));
   } 
 
-proc Sync(args){
-  	 return this.Command("SYNC");
+proc Slowlog(args...?n){
+  	 return this.Command("SLOWLOG",(...args));
   } 
 
-proc Time(args){
-  	 return this.Command("TIME");
+proc Sync(args...?n){
+  	 return this.Command("SYNC",(...args));
   } 
 
-proc Sadd(args){
-  	 return this.Command("SADD");
+proc Time(args...?n){
+  	 return this.Command("TIME",(...args));
   } 
 
-proc Scard(args){
-  	 return this.Command("SCARD");
+proc Sadd(args...?n){
+  	 return this.Command("SADD",(...args));
   } 
 
-proc Sdiff(args){
-  	 return this.Command("SDIFF");
+proc Scard(args...?n){
+  	 return this.Command("SCARD",(...args));
   } 
 
-proc Sdiffstore(args){
-  	 return this.Command("SDIFFSTORE");
+proc Sdiff(args...?n){
+  	 return this.Command("SDIFF",(...args));
   } 
 
-proc Sinter(args){
-  	 return this.Command("SINTER");
+proc Sdiffstore(args...?n){
+  	 return this.Command("SDIFFSTORE",(...args));
   } 
 
-proc Sinterstore(args){
-  	 return this.Command("SINTERSTORE");
+proc Sinter(args...?n){
+  	 return this.Command("SINTER",(...args));
   } 
 
-proc Sismember(args){
-  	 return this.Command("SISMEMBER");
+proc Sinterstore(args...?n){
+  	 return this.Command("SINTERSTORE",(...args));
   } 
 
-proc Smembers(args){
-  	 return this.Command("SMEMBERS");
+proc Sismember(args...?n){
+  	 return this.Command("SISMEMBER",(...args));
   } 
 
-proc Smove(args){
-  	 return this.Command("SMOVE");
+proc Smembers(args...?n){
+  	 return this.Command("SMEMBERS",(...args));
   } 
 
-proc Spop(args){
-  	 return this.Command("SPOP");
+proc Smove(args...?n){
+  	 return this.Command("SMOVE",(...args));
   } 
 
-proc Srandmember(args){
-  	 return this.Command("SRANDMEMBER");
+proc Spop(args...?n){
+  	 return this.Command("SPOP",(...args));
   } 
 
-proc Srem(args){
-  	 return this.Command("SREM");
+proc Srandmember(args...?n){
+  	 return this.Command("SRANDMEMBER",(...args));
   } 
 
-proc Sscan(args){
-  	 return this.Command("SSCAN");
+proc Srem(args...?n){
+  	 return this.Command("SREM",(...args));
   } 
 
-proc Sunion(args){
-  	 return this.Command("SUNION");
+proc Sscan(args...?n){
+  	 return this.Command("SSCAN",(...args));
   } 
 
-proc Sunionstore(args){
-  	 return this.Command("SUNIONSTORE");
+proc Sunion(args...?n){
+  	 return this.Command("SUNION",(...args));
   } 
 
-proc Zadd(args){
-  	 return this.Command("ZADD");
+proc Sunionstore(args...?n){
+  	 return this.Command("SUNIONSTORE",(...args));
   } 
 
-proc Zcard(args){
-  	 return this.Command("ZCARD");
+proc Zadd(args...?n){
+  	 return this.Command("ZADD",(...args));
   } 
 
-proc Zcount(args){
-  	 return this.Command("ZCOUNT");
+proc Zcard(args...?n){
+  	 return this.Command("ZCARD",(...args));
   } 
 
-proc Zincrby(args){
-  	 return this.Command("ZINCRBY");
+proc Zcount(args...?n){
+  	 return this.Command("ZCOUNT",(...args));
   } 
 
-proc Zinterstore(args){
-  	 return this.Command("ZINTERSTORE");
+proc Zincrby(args...?n){
+  	 return this.Command("ZINCRBY",(...args));
   } 
 
-proc Zlexcount(args){
-  	 return this.Command("ZLEXCOUNT");
+proc Zinterstore(args...?n){
+  	 return this.Command("ZINTERSTORE",(...args));
   } 
 
-proc Zrange(args){
-  	 return this.Command("ZRANGE");
+proc Zlexcount(args...?n){
+  	 return this.Command("ZLEXCOUNT",(...args));
   } 
 
-proc Zrangebylex(args){
-  	 return this.Command("ZRANGEBYLEX");
+proc Zrange(args...?n){
+  	 return this.Command("ZRANGE",(...args));
   } 
 
-proc Zrangebyscore(args){
-  	 return this.Command("ZRANGEBYSCORE");
+proc Zrangebylex(args...?n){
+  	 return this.Command("ZRANGEBYLEX",(...args));
   } 
 
-proc Zrank(args){
-  	 return this.Command("ZRANK");
+proc Zrangebyscore(args...?n){
+  	 return this.Command("ZRANGEBYSCORE",(...args));
   } 
 
-proc Zrem(args){
-  	 return this.Command("ZREM");
+proc Zrank(args...?n){
+  	 return this.Command("ZRANK",(...args));
   } 
 
-proc Zremrangebylex(args){
-  	 return this.Command("ZREMRANGEBYLEX");
+proc Zrem(args...?n){
+  	 return this.Command("ZREM",(...args));
   } 
 
-proc Zremrangebyrank(args){
-  	 return this.Command("ZREMRANGEBYRANK");
+proc Zremrangebylex(args...?n){
+  	 return this.Command("ZREMRANGEBYLEX",(...args));
   } 
 
-proc Zremrangebyscore(args){
-  	 return this.Command("ZREMRANGEBYSCORE");
+proc Zremrangebyrank(args...?n){
+  	 return this.Command("ZREMRANGEBYRANK",(...args));
   } 
 
-proc Zrevrange(args){
-  	 return this.Command("ZREVRANGE");
+proc Zremrangebyscore(args...?n){
+  	 return this.Command("ZREMRANGEBYSCORE",(...args));
   } 
 
-proc Zrevrangebylex(args){
-  	 return this.Command("ZREVRANGEBYLEX");
+proc Zrevrange(args...?n){
+  	 return this.Command("ZREVRANGE",(...args));
   } 
 
-proc Zrevrangebyscore(args){
-  	 return this.Command("ZREVRANGEBYSCORE");
+proc Zrevrangebylex(args...?n){
+  	 return this.Command("ZREVRANGEBYLEX",(...args));
   } 
 
-proc Zrevrank(args){
-  	 return this.Command("ZREVRANK");
+proc Zrevrangebyscore(args...?n){
+  	 return this.Command("ZREVRANGEBYSCORE",(...args));
   } 
 
-proc Zscan(args){
-  	 return this.Command("ZSCAN");
+proc Zrevrank(args...?n){
+  	 return this.Command("ZREVRANK",(...args));
   } 
 
-proc Zscore(args){
-  	 return this.Command("ZSCORE");
+proc Zscan(args...?n){
+  	 return this.Command("ZSCAN",(...args));
   } 
 
-proc Zunionstore(args){
-  	 return this.Command("ZUNIONSTORE");
+proc Zscore(args...?n){
+  	 return this.Command("ZSCORE",(...args));
   } 
 
-proc Append(args){
-  	 return this.Command("APPEND");
+proc Zunionstore(args...?n){
+  	 return this.Command("ZUNIONSTORE",(...args));
   } 
 
-proc Bitcount(args){
-  	 return this.Command("BITCOUNT");
+proc Append(args...?n){
+  	 return this.Command("APPEND",(...args));
   } 
 
-proc Bitfield(args){
-  	 return this.Command("BITFIELD");
+proc Bitcount(args...?n){
+  	 return this.Command("BITCOUNT",(...args));
   } 
 
-proc Bitop(args){
-  	 return this.Command("BITOP");
+proc Bitfield(args...?n){
+  	 return this.Command("BITFIELD",(...args));
   } 
 
-proc Bitpos(args){
-  	 return this.Command("BITPOS");
+proc Bitop(args...?n){
+  	 return this.Command("BITOP",(...args));
   } 
 
-proc Decr(args){
-  	 return this.Command("DECR");
+proc Bitpos(args...?n){
+  	 return this.Command("BITPOS",(...args));
   } 
 
-proc Decrby(args){
-  	 return this.Command("DECRBY");
+proc Decr(args...?n){
+  	 return this.Command("DECR",(...args));
   } 
 
-proc Get(args){
-  	 return this.Command("GET");
+proc Decrby(args...?n){
+  	 return this.Command("DECRBY",(...args));
   } 
 
-proc Getbit(args){
-  	 return this.Command("GETBIT");
+proc Get(args...?n){
+  	 return this.Command("GET",(...args));
   } 
 
-proc Getrange(args){
-  	 return this.Command("GETRANGE");
+proc Getbit(args...?n){
+  	 return this.Command("GETBIT",(...args));
   } 
 
-proc Getset(args){
-  	 return this.Command("GETSET");
+proc Getrange(args...?n){
+  	 return this.Command("GETRANGE",(...args));
   } 
 
-proc Incr(args){
-  	 return this.Command("INCR");
+proc Getset(args...?n){
+  	 return this.Command("GETSET",(...args));
   } 
 
-proc Incrby(args){
-  	 return this.Command("INCRBY");
+proc Incr(args...?n){
+  	 return this.Command("INCR",(...args));
   } 
 
-proc Incrbyfloat(args){
-  	 return this.Command("INCRBYFLOAT");
+proc Incrby(args...?n){
+  	 return this.Command("INCRBY",(...args));
   } 
 
-proc Mget(args){
-  	 return this.Command("MGET");
+proc Incrbyfloat(args...?n){
+  	 return this.Command("INCRBYFLOAT",(...args));
   } 
 
-proc Mset(args){
-  	 return this.Command("MSET");
+proc Mget(args...?n){
+  	 return this.Command("MGET",(...args));
   } 
 
-proc Msetnx(args){
-  	 return this.Command("MSETNX");
+proc Mset(args...?n){
+  	 return this.Command("MSET",(...args));
   } 
 
-proc Psetex(args){
-  	 return this.Command("PSETEX");
+proc Msetnx(args...?n){
+  	 return this.Command("MSETNX",(...args));
   } 
 
-proc Set(args){
-  	 return this.Command("SET");
+proc Psetex(args...?n){
+  	 return this.Command("PSETEX",(...args));
   } 
 
-proc Setbit(args){
-  	 return this.Command("SETBIT");
+proc Set(args...?n){
+  	 return this.Command("SET",(...args));
   } 
 
-proc Setex(args){
-  	 return this.Command("SETEX");
+proc Setbit(args...?n){
+  	 return this.Command("SETBIT",(...args));
   } 
 
-proc Setnx(args){
-  	 return this.Command("SETNX");
+proc Setex(args...?n){
+  	 return this.Command("SETEX",(...args));
   } 
 
-proc Setrange(args){
-  	 return this.Command("SETRANGE");
+proc Setnx(args...?n){
+  	 return this.Command("SETNX",(...args));
   } 
 
-proc Strlen(args){
-  	 return this.Command("STRLEN");
+proc Setrange(args...?n){
+  	 return this.Command("SETRANGE",(...args));
   } 
 
-proc Discard(args){
-  	 return this.Command("DISCARD");
+proc Strlen(args...?n){
+  	 return this.Command("STRLEN",(...args));
   } 
 
-proc Exec(args){
-  	 return this.Command("EXEC");
+proc Discard(args...?n){
+  	 return this.Command("DISCARD",(...args));
   } 
 
-proc Multi(args){
-  	 return this.Command("MULTI");
+proc Exec(args...?n){
+  	 return this.Command("EXEC",(...args));
   } 
 
-proc Unwatch(args){
-  	 return this.Command("UNWATCH");
+proc Multi(args...?n){
+  	 return this.Command("MULTI",(...args));
   } 
 
-proc Watch(args){
-  	 return this.Command("WATCH");
+proc Unwatch(args...?n){
+  	 return this.Command("UNWATCH",(...args));
   } 
 
+proc Watch(args...?n){
+  	 return this.Command("WATCH",(...args));
+  } 
 
 }
 
